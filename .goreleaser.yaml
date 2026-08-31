@@ -1,0 +1,132 @@
+version: 2
+
+project_name: lsrules
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: lsrules
+    main: .
+    binary: lsrules
+    # This tool is macOS-only (LaunchAgent, Keychain, kinit) and links cgo
+    # (github.com/keybase/go-keychain uses CoreFoundation/Security), so it
+    # can only be built on a macOS runner with CGO_ENABLED=1 — no Linux
+    # cross-compilation here.
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/schretzi/littlesnitchrules/internal/version.version={{ .Version }}
+      - -X github.com/schretzi/littlesnitchrules/internal/version.commit={{ .FullCommit }}
+      - -X github.com/schretzi/littlesnitchrules/internal/version.date={{ .Date }}
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - LICENSE
+      - testdata/config.example.yaml
+      - docs/*
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+# Casks, not formulas: goreleaser deprecated `brews` for binary releases in
+# favour of `homebrew_casks`, which is what Homebrew now expects for
+# distributing pre-compiled binaries.
+homebrew_casks:
+  - name: lsrules
+    # Publishes to github.com/schretzi/homebrew-tap, so users can
+    # `brew install schretzi/tap/lsrules`. That repository must
+    # exist, and the release workflow needs a HOMEBREW_TAP_TOKEN secret with
+    # write access to it (the default GITHUB_TOKEN only covers this repo).
+    repository:
+      owner: schretzi
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: https://github.com/schretzi/LittleSnitchRules
+    description: Serve Little Snitch rule groups over HTTPS from this machine
+    license: MIT
+
+    binaries:
+      - lsrules
+
+    commit_author:
+      name: goreleaser
+      email: noreply@github.com
+
+    caveats: |
+      This only installs the binary. It needs a certificate - Little Snitch
+      subscribes over HTTPS and nothing else - which MacbookSetup's local_ca
+      role issues:
+
+        ansible-playbook site.yml --tags local_ca --ask-become-pass
+
+      Then:
+
+        lsrules config init
+        lsrules config validate
+        lsrules service install
+
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            # The release binaries are not notarized, so Gatekeeper would
+            # otherwise refuse to run them after a browser-less download.
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/lsrules"]
+          end
+      pre:
+        uninstall: |
+          # The LaunchAgent plist references this binary by absolute path, so
+          # leaving it loaded would make launchd retry a deleted executable
+          # forever. Boot it out and remove the plist first.
+          system_command "#{staged_path}/lsrules",
+                         args: ["service", "uninstall"],
+                         must_succeed: false
+
+    # `brew uninstall` leaves these behind; `brew uninstall --zap` clears
+    # them. The rule groups themselves are not listed: they live in a git
+    # checkout this only reads, and deleting someone's repository because
+    # they uninstalled a server would be unforgivable.
+    zap:
+      trash:
+        - ~/.config/lsrules
+        - ~/Library/Logs/lsrules.log
+        - ~/Library/Logs/lsrules.err.log
+        # Fallback in case the uninstall hook above never ran.
+        - ~/Library/LaunchAgents/com.schretzi.lsrules.plist
+
+release:
+  github:
+    owner: schretzi
+    name: LittleSnitchRules
+  draft: false
+  prerelease: auto
+  footer: |
+    ## Install
+
+    ```sh
+    brew install schretzi/tap/lsrules
+    ```
+
+    Or grab a binary from the assets below.
