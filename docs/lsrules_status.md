@@ -10,6 +10,7 @@ lsrules status [flags]
 
 ```
   -h, --help   help for status
+      --json   machine-readable output
 ```
 
 ### Options inherited from parent commands

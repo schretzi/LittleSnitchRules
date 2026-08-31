@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -20,6 +21,30 @@ import (
 // silent until a subscription refresh fails.
 const certExpiryWarning = 30 * 24 * time.Hour
 
+// statusJSON is the machine-readable shape of `status`.
+//
+// It exists because macswitcher's observe shows this daemon as a row and has
+// to read the state from somewhere. Scraping the human output is what that
+// tool already learned not to do - the wording is presentation and changes -
+// so the contract is here instead, and the human text is free to move.
+type statusJSON struct {
+	BaseURL     string   `json:"baseUrl"`
+	RulesDir    string   `json:"rulesDir"`
+	RuleGroups  []string `json:"ruleGroups"`
+	Listening   bool     `json:"listening"`
+	TLSOK       bool     `json:"tlsOk"`
+	TLSError    string   `json:"tlsError,omitempty"`
+	Certificate struct {
+		Subject   string `json:"subject"`
+		Issuer    string `json:"issuer"`
+		NotAfter  string `json:"notAfter"`
+		ExpiresIn int    `json:"expiresInDays"`
+	} `json:"certificate"`
+	CertificateError string `json:"certificateError,omitempty"`
+}
+
+var statusJSONOut bool
+
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show what is served, whether the port answers, and the launchd job",
@@ -30,6 +55,9 @@ var statusCmd = &cobra.Command{
 			return err
 		}
 		out := cmd.OutOrStdout()
+		if statusJSONOut {
+			return writeStatusJSON(cmd, cfg)
+		}
 
 		fmt.Fprintf(out, "config: %s\n", configPath)
 		fmt.Fprintf(out, "base_url: %s\n", cfg.BaseURL())
@@ -148,7 +176,55 @@ var configValidateCmd = &cobra.Command{
 	},
 }
 
+// writeStatusJSON reports the same facts as the human output, probed the same
+// way: the port is dialled and a TLS handshake completed, because launchd
+// calling the job "running" says nothing about whether a subscription can
+// still refresh.
+func writeStatusJSON(cmd *cobra.Command, cfg config.Config) error {
+	var st statusJSON
+	st.BaseURL = cfg.BaseURL()
+
+	dir, err := config.ExpandPath(cfg.RulesDir)
+	if err != nil {
+		return err
+	}
+	st.RulesDir = dir
+	st.RuleGroups = []string{}
+	if files, err := server.RuleFiles(dir); err == nil {
+		st.RuleGroups = files
+	}
+
+	ctx, cancel := context.WithTimeout(cmd.Context(), 2*time.Second)
+	defer cancel()
+	var d net.Dialer
+	if conn, err := d.DialContext(ctx, "tcp", cfg.Address()); err == nil {
+		_ = conn.Close()
+		st.Listening = true
+		tlsDialer := &tls.Dialer{NetDialer: &net.Dialer{}}
+		if tlsConn, err := tlsDialer.DialContext(ctx, "tcp", cfg.Address()); err == nil {
+			_ = tlsConn.Close()
+			st.TLSOK = true
+		} else {
+			st.TLSError = err.Error()
+		}
+	}
+
+	if info, err := server.InspectCertificate(cfg); err == nil {
+		st.Certificate.Subject = info.Subject
+		st.Certificate.Issuer = info.Issuer
+		st.Certificate.NotAfter = info.NotAfter.Format(time.RFC3339)
+		st.Certificate.ExpiresIn = int(info.ExpiresIn.Hours() / 24)
+	} else {
+		st.CertificateError = err.Error()
+	}
+
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(st)
+}
+
 func init() {
+	statusCmd.Flags().BoolVar(&statusJSONOut, "json", false, "machine-readable output")
 	rootCmd.AddCommand(statusCmd)
 	configCmd.AddCommand(configInitCmd, configValidateCmd)
 	rootCmd.AddCommand(configCmd)
