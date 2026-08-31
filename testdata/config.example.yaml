@@ -1,0 +1,34 @@
+# lsrules configuration - annotated example.
+#
+# `lsrules config init` writes this shape with the defaults filled in;
+# `lsrules config validate` reports every problem at once, because a server
+# that cannot start is a launchd crash-loop with a healthy-looking label.
+
+# The directory holding the .lsrules files. Only *.lsrules in it is served -
+# a rule group lives in a git checkout next to a README and a .git, and none
+# of that belongs on a listening socket.
+rules_dir: ~/Workspace/Schretzi/LittleSnitchConfig/rules
+
+listen:
+  # Loopback. Little Snitch subscribes from this machine, and a rule group
+  # describes what runs here.
+  host: 127.0.0.1
+  port: 8443
+
+tls:
+  # HTTPS is not a preference: Little Snitch refuses to subscribe over
+  # anything else ("For security reasons, only HTTPS URLs are allowed").
+  #
+  # cert must be the full chain - leaf plus issuing intermediate. Issued on
+  # this setup by MacbookSetup's local_ca role with `step --bundle`, which is
+  # what lets a client verify against the root the System keychain already
+  # trusts without installing anything extra.
+  cert: ~/.local/share/localca/lsrules.crt
+  key: ~/.local/share/localca/lsrules.key
+
+log:
+  # No rotation settings here on purpose: rotation is newsyslog's job
+  # (MacbookSetup, etc/newsyslog.d/lsrules.conf). This process only has to
+  # notice when the file was rotated out from under it, which it does by
+  # re-stating the path and reopening when the inode changes.
+  path: ~/Library/Logs/lsrules.log
